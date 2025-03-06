@@ -1,14 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use next_custom_transforms::transforms::fonts::*;
-use turbo_tasks::Vc;
-use turbopack_binding::{
-    swc::core::ecma::{ast::Program, atoms::JsWord, visit::VisitMutWith},
-    turbopack::{
-        ecmascript::{CustomTransformer, EcmascriptInputTransform, TransformContext},
-        turbopack::module_options::{ModuleRule, ModuleRuleEffect},
-    },
-};
+use swc_core::ecma::{ast::Program, atoms::Atom, visit::VisitMutWith};
+use turbo_tasks::ResolvedVc;
+use turbopack::module_options::{ModuleRule, ModuleRuleEffect};
+use turbopack_ecmascript::{CustomTransformer, EcmascriptInputTransform, TransformContext};
 
 use super::module_rule_match_js_no_url;
 
@@ -22,20 +18,22 @@ pub fn get_next_font_transform_rule(enable_mdx_rs: bool) -> ModuleRule {
     ];
 
     let transformer =
-        EcmascriptInputTransform::Plugin(Vc::cell(Box::new(NextJsFont { font_loaders }) as _));
+        EcmascriptInputTransform::Plugin(ResolvedVc::cell(
+            Box::new(NextJsFont { font_loaders }) as _
+        ));
     ModuleRule::new(
         // TODO: Only match in pages (not pages/api), app/, etc.
         module_rule_match_js_no_url(enable_mdx_rs),
         vec![ModuleRuleEffect::ExtendEcmascriptTransforms {
-            prepend: Vc::cell(vec![]),
-            append: Vc::cell(vec![transformer]),
+            prepend: ResolvedVc::cell(vec![]),
+            append: ResolvedVc::cell(vec![transformer]),
         }],
     )
 }
 
 #[derive(Debug)]
 struct NextJsFont {
-    font_loaders: Vec<JsWord>,
+    font_loaders: Vec<Atom>,
 }
 
 #[async_trait]

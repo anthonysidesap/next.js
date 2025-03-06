@@ -7,6 +7,7 @@ import { adapter } from '../../server/web/adapter'
 // Import the userland code.
 import * as _mod from 'VAR_USERLAND'
 import { edgeInstrumentationOnRequestError } from '../../server/web/globals'
+import { isNextRouterError } from '../../client/components/is-next-router-error'
 
 const mod = { ..._mod }
 const handler = mod.middleware || mod.default
@@ -26,11 +27,21 @@ function errorHandledHandler(fn: AdapterOptions['handler']) {
     try {
       return await fn(...args)
     } catch (err) {
+      // In development, error the navigation API usage in runtime,
+      // since it's not allowed to be used in middleware as it's outside of react component tree.
+      if (process.env.NODE_ENV !== 'production') {
+        if (isNextRouterError(err)) {
+          err.message = `Next.js navigation API is not allowed to be used in Middleware.`
+          throw err
+        }
+      }
       const req = args[0]
+      const url = new URL(req.url)
+      const resource = url.pathname + url.search
       await edgeInstrumentationOnRequestError(
         err,
         {
-          url: req.url,
+          path: resource,
           method: req.method,
           headers: Object.fromEntries(req.headers.entries()),
         },
@@ -38,6 +49,7 @@ function errorHandledHandler(fn: AdapterOptions['handler']) {
           routerKind: 'Pages Router',
           routePath: '/middleware',
           routeType: 'middleware',
+          revalidateReason: undefined,
         }
       )
 

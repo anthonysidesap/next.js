@@ -42,6 +42,8 @@ type ApiContext = __ApiPreviewProps & {
   allowedRevalidateHeaderKeys?: string[]
   hostname?: string
   revalidate?: RevalidateFn
+  multiZoneDraftMode?: boolean
+  dev: boolean
 }
 
 function getMaxContentLength(responseLimit?: ResponseLimit) {
@@ -270,10 +272,15 @@ async function revalidate(
   }
   const allowedRevalidateHeaderKeys = [
     ...(context.allowedRevalidateHeaderKeys || []),
-    ...(context.trustHostHeader
-      ? ['cookie', 'x-vercel-protection-bypass']
-      : []),
   ]
+
+  if (context.trustHostHeader || context.dev) {
+    allowedRevalidateHeaderKeys.push('cookie')
+  }
+
+  if (context.trustHostHeader) {
+    allowedRevalidateHeaderKeys.push('x-vercel-protection-bypass')
+  }
 
   for (const key of Object.keys(req.headers)) {
     if (allowedRevalidateHeaderKeys.includes(key)) {
@@ -295,6 +302,7 @@ async function revalidate(
 
       if (
         cacheHeader?.toUpperCase() !== 'REVALIDATED' &&
+        res.status !== 200 &&
         !(res.status === 404 && opts.unstable_onlyGenerated)
       ) {
         throw new Error(`Invalid response ${res.status}`)
@@ -348,7 +356,7 @@ export async function apiResolver(
     apiReq.query = query
     // Parsing preview data
     setLazyProp({ req: apiReq }, 'previewData', () =>
-      tryGetPreviewData(req, res, apiContext)
+      tryGetPreviewData(req, res, apiContext, !!apiContext.multiZoneDraftMode)
     )
     // Checking if preview mode is enabled
     setLazyProp({ req: apiReq }, 'preview', () =>
@@ -441,6 +449,7 @@ export async function apiResolver(
       routerKind: 'Pages Router',
       routePath: page || '',
       routeType: 'route',
+      revalidateReason: undefined,
     })
 
     if (err instanceof ApiError) {

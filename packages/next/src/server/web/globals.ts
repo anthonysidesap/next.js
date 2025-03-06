@@ -18,6 +18,8 @@ export async function getEdgeInstrumentationModule(): Promise<
 
 let instrumentationModulePromise: Promise<any> | null = null
 async function registerInstrumentation() {
+  // Ensure registerInstrumentation is not called in production build
+  if (process.env.NEXT_PHASE === 'phase-production-build') return
   if (!instrumentationModulePromise) {
     instrumentationModulePromise = getEdgeInstrumentationModule()
   }
@@ -80,6 +82,10 @@ function __import_unsupported(moduleName: string) {
 }
 
 function enhanceGlobals() {
+  if (process.env.NEXT_RUNTIME !== 'edge') {
+    return
+  }
+
   // The condition is true when the "process" module is provided
   if (process !== global.process) {
     // prefer local process but global.process has correct "env"

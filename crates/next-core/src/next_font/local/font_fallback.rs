@@ -3,8 +3,8 @@ use allsorts::{
     Font,
 };
 use anyhow::{bail, Context, Result};
-use turbo_tasks::Vc;
-use turbopack_binding::turbo::tasks_fs::{FileContent, FileSystemPath};
+use turbo_tasks::{ResolvedVc, Vc};
+use turbo_tasks_fs::{FileContent, FileSystemPath};
 
 use super::{
     options::{FontDescriptor, FontDescriptors, FontWeight, NextFontLocalOptions},
@@ -27,7 +27,7 @@ static BOLD_WEIGHT: f64 = 700.0;
 
 #[turbo_tasks::function]
 pub(super) async fn get_font_fallbacks(
-    context: Vc<FileSystemPath>,
+    lookup_path: Vc<FileSystemPath>,
     options_vc: Vc<NextFontLocalOptions>,
 ) -> Result<Vc<FontFallbacks>> {
     let options = &*options_vc.await?;
@@ -38,42 +38,45 @@ pub(super) async fn get_font_fallbacks(
     match options.adjust_font_fallback {
         AdjustFontFallback::Arial => font_fallbacks.push(
             FontFallback::Automatic(AutomaticFontFallback {
-                scoped_font_family,
-                local_font_family: Vc::cell("Arial".into()),
+                scoped_font_family: scoped_font_family.to_resolved().await?,
+                local_font_family: ResolvedVc::cell("Arial".into()),
                 adjustment: Some(
-                    get_font_adjustment(context, options_vc, &DEFAULT_SANS_SERIF_FONT).await?,
+                    get_font_adjustment(lookup_path, options_vc, &DEFAULT_SANS_SERIF_FONT).await?,
                 ),
             })
-            .into(),
+            .resolved_cell(),
         ),
         AdjustFontFallback::TimesNewRoman => font_fallbacks.push(
             FontFallback::Automatic(AutomaticFontFallback {
-                scoped_font_family,
-                local_font_family: Vc::cell("Times New Roman".into()),
+                scoped_font_family: scoped_font_family.to_resolved().await?,
+                local_font_family: ResolvedVc::cell("Times New Roman".into()),
                 adjustment: Some(
-                    get_font_adjustment(context, options_vc, &DEFAULT_SERIF_FONT).await?,
+                    get_font_adjustment(lookup_path, options_vc, &DEFAULT_SERIF_FONT).await?,
                 ),
             })
-            .into(),
+            .resolved_cell(),
         ),
         AdjustFontFallback::None => (),
     };
 
     if let Some(fallback) = &options.fallback {
-        font_fallbacks.push(FontFallback::Manual(fallback.clone()).into());
+        font_fallbacks.push(FontFallback::Manual(fallback.clone()).resolved_cell());
     }
 
     Ok(Vc::cell(font_fallbacks))
 }
 
 async fn get_font_adjustment(
-    context: Vc<FileSystemPath>,
+    lookup_path: Vc<FileSystemPath>,
     options: Vc<NextFontLocalOptions>,
     fallback_font: &DefaultFallbackFont,
 ) -> Result<FontAdjustment> {
     let options = &*options.await?;
     let main_descriptor = pick_font_for_fallback_generation(&options.fonts)?;
-    let font_file = &*context.join(main_descriptor.path.clone()).read().await?;
+    let font_file = &*lookup_path
+        .join(main_descriptor.path.clone())
+        .read()
+        .await?;
     let font_file_rope = match font_file {
         FileContent::NotFound => bail!(FontError::FontFileNotFound(main_descriptor.path.clone())),
         FileContent::Content(file) => file.content(),
@@ -145,8 +148,8 @@ fn calc_average_width(font: &mut Font<DynamicFontTableProvider>) -> Option<f32> 
 /// font file:
 /// - Most of the text will have normal weight, use the one closest to 400
 /// - Most of the text will have normal style, prefer normal over italic
-/// - If two font files have the same distance from normal weight, the thinner
-///   one will most likely be the bulk of the text
+/// - If two font files have the same distance from normal weight, the thinner one will most likely
+///   be the bulk of the text
 fn pick_font_for_fallback_generation(
     font_descriptors: &FontDescriptors,
 ) -> Result<&FontDescriptor> {
@@ -251,7 +254,7 @@ fn parse_weight_string(weight_str: &str) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use turbo_tasks::RcStr;
+    use turbo_rcstr::RcStr;
 
     use crate::next_font::local::{
         font_fallback::pick_font_for_fallback_generation,

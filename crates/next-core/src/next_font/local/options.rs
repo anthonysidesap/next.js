@@ -2,8 +2,8 @@ use std::{fmt::Display, str::FromStr};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use turbo_tasks::{RcStr, Vc};
-use turbopack_binding::turbo::tasks::{trace::TraceRawVcs, Value};
+use turbo_rcstr::RcStr;
+use turbo_tasks::{trace::TraceRawVcs, NonLocalValue, Value, Vc};
 
 use super::request::{
     AdjustFontFallback, NextFontLocalRequest, NextFontLocalRequestArguments, SrcDescriptor,
@@ -42,15 +42,25 @@ impl NextFontLocalOptions {
     }
 
     #[turbo_tasks::function]
-    pub async fn font_family(self: Vc<Self>) -> Result<Vc<RcStr>> {
-        Ok(Vc::cell(self.await?.variable_name.clone()))
+    pub fn font_family(&self) -> Vc<RcStr> {
+        Vc::cell(self.variable_name.clone())
     }
 }
 
 /// Describes an individual font file's path, weight, style, etc. Derived from
 /// the `src` field or top-level object provided by the user
 #[derive(
-    Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TraceRawVcs,
+    Clone,
+    Debug,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    TraceRawVcs,
+    NonLocalValue,
 )]
 pub(super) struct FontDescriptor {
     pub weight: Option<FontWeight>,
@@ -81,7 +91,17 @@ impl FontDescriptor {
 }
 
 #[derive(
-    Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TraceRawVcs,
+    Clone,
+    Debug,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    TraceRawVcs,
+    NonLocalValue,
 )]
 pub(super) enum FontDescriptors {
     /// `One` is a special case when the user did not provide a `src` field and
@@ -93,7 +113,17 @@ pub(super) enum FontDescriptors {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Hash, TraceRawVcs,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Deserialize,
+    Serialize,
+    Hash,
+    TraceRawVcs,
+    NonLocalValue,
 )]
 pub(super) enum FontWeight {
     Variable(RcStr, RcStr),
@@ -174,7 +204,7 @@ pub(super) fn options_from_request(request: &NextFontLocalRequest) -> Result<Nex
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use turbopack_binding::turbo::tasks_fs::json::parse_json_with_source_context;
+    use turbo_tasks_fs::json::parse_json_with_source_context;
 
     use super::{options_from_request, NextFontLocalOptions};
     use crate::next_font::local::{

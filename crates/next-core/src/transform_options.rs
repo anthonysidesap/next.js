@@ -1,42 +1,36 @@
 use anyhow::Result;
-use turbo_tasks::Vc;
-use turbopack_binding::{
-    turbo::tasks_fs::{FileJsonContent, FileSystemPath},
-    turbopack::{
-        browser::react_refresh::assert_can_resolve_react_refresh,
-        core::{
-            file_source::FileSource,
-            resolve::{find_context_file, node::node_cjs_resolve_options, FindContextFileResult},
-            source::Source,
-        },
-        ecmascript::typescript::resolve::{read_from_tsconfigs, read_tsconfigs, tsconfig},
-        turbopack::{
-            module_options::{
-                DecoratorsKind, DecoratorsOptions, JsxTransformOptions, TypescriptTransformOptions,
-            },
-            resolve_options_context::ResolveOptionsContext,
-        },
+use turbo_tasks::{ResolvedVc, Vc};
+use turbo_tasks_fs::{self, FileJsonContent, FileSystemPath};
+use turbopack::{
+    module_options::{
+        DecoratorsKind, DecoratorsOptions, JsxTransformOptions, TypescriptTransformOptions,
     },
+    resolve_options_context::ResolveOptionsContext,
 };
+use turbopack_browser::react_refresh::assert_can_resolve_react_refresh;
+use turbopack_core::{
+    file_source::FileSource,
+    resolve::{find_context_file, node::node_cjs_resolve_options, FindContextFileResult},
+    source::Source,
+};
+use turbopack_ecmascript::typescript::resolve::{read_from_tsconfigs, read_tsconfigs, tsconfig};
 
 use crate::{mode::NextMode, next_config::NextConfig};
 
 async fn get_typescript_options(
     project_path: Vc<FileSystemPath>,
-) -> Option<Vec<(Vc<FileJsonContent>, Vc<Box<dyn Source>>)>> {
+) -> Result<Option<Vec<(Vc<FileJsonContent>, ResolvedVc<Box<dyn Source>>)>>> {
     let tsconfig = find_context_file(project_path, tsconfig());
-    match *tsconfig.await.ok()? {
-        FindContextFileResult::Found(path, _) => Some(
-            read_tsconfigs(
-                path.read(),
-                Vc::upcast(FileSource::new(path)),
-                node_cjs_resolve_options(path.root()),
-            )
-            .await
-            .ok()?,
-        ),
-        FindContextFileResult::NotFound(_) => None,
-    }
+    Ok(match tsconfig.await.ok().as_deref() {
+        Some(FindContextFileResult::Found(path, _)) => read_tsconfigs(
+            path.read(),
+            ResolvedVc::upcast(FileSource::new(**path).to_resolved().await?),
+            node_cjs_resolve_options(path.root()),
+        )
+        .await
+        .ok(),
+        Some(FindContextFileResult::NotFound(_)) | None => None,
+    })
 }
 
 /// Build the transform options for specifically for the typescript's runtime
@@ -45,7 +39,7 @@ async fn get_typescript_options(
 pub async fn get_typescript_transform_options(
     project_path: Vc<FileSystemPath>,
 ) -> Result<Vc<TypescriptTransformOptions>> {
-    let tsconfig = get_typescript_options(project_path).await;
+    let tsconfig = get_typescript_options(project_path).await?;
 
     let use_define_for_class_fields = if let Some(tsconfig) = tsconfig {
         read_from_tsconfigs(&tsconfig, |json, _| {
@@ -70,7 +64,7 @@ pub async fn get_typescript_transform_options(
 pub async fn get_decorators_transform_options(
     project_path: Vc<FileSystemPath>,
 ) -> Result<Vc<DecoratorsOptions>> {
-    let tsconfig = get_typescript_options(project_path).await;
+    let tsconfig = get_typescript_options(project_path).await?;
 
     let decorators_transform_options = if let Some(tsconfig) = tsconfig {
         read_from_tsconfigs(&tsconfig, |json, _| {
@@ -130,22 +124,22 @@ pub async fn get_jsx_transform_options(
     is_rsc_context: bool,
     next_config: Vc<NextConfig>,
 ) -> Result<Vc<JsxTransformOptions>> {
-    let tsconfig = get_typescript_options(project_path).await;
+    let tsconfig = get_typescript_options(project_path).await?;
 
-    let enable_react_refresh = if let Some(resolve_options_context) = resolve_options_context {
-        assert_can_resolve_react_refresh(project_path, resolve_options_context)
-            .await?
-            .is_found()
+    let is_react_development = mode.await?.is_react_development();
+    let enable_react_refresh = if is_react_development {
+        if let Some(resolve_options_context) = resolve_options_context {
+            assert_can_resolve_react_refresh(project_path, resolve_options_context)
+                .await?
+                .is_found()
+        } else {
+            false
+        }
     } else {
         false
     };
 
-    let is_emotion_enabled = next_config
-        .await?
-        .compiler
-        .as_ref()
-        .map(|c| c.emotion.is_some())
-        .unwrap_or_default();
+    let is_emotion_enabled = next_config.compiler().await?.emotion.is_some();
 
     // [NOTE]: ref: WEB-901
     // next.js does not allow to overriding react runtime config via tsconfig /

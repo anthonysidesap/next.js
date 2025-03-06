@@ -1,11 +1,14 @@
-use turbopack_binding::swc::core::ecma::{
-    ast::{Ident, JSXAttr, JSXAttrName, JSXAttrOrSpread, JSXElementName, JSXOpeningElement},
-    atoms::JsWord,
-    visit::Fold,
+use swc_core::ecma::{
+    ast::{
+        Ident, IdentName, JSXAttr, JSXAttrName, JSXAttrOrSpread, JSXElementName, JSXOpeningElement,
+        Pass,
+    },
+    atoms::Atom,
+    visit::{fold_pass, Fold},
 };
 
-pub fn amp_attributes() -> impl Fold {
-    AmpAttributePatcher::default()
+pub fn amp_attributes() -> impl Pass {
+    fold_pass(AmpAttributePatcher::default())
 }
 
 #[derive(Debug, Default)]
@@ -26,22 +29,16 @@ impl Fold for AmpAttributePatcher {
             if sym.starts_with("amp-") {
                 for i in &mut attrs {
                     if let JSXAttrOrSpread::JSXAttr(JSXAttr {
-                        name:
-                            JSXAttrName::Ident(Ident {
-                                sym,
-                                span: s,
-                                optional: o,
-                            }),
+                        name: JSXAttrName::Ident(IdentName { sym, span: s }),
                         span,
                         value,
                     }) = &i
                     {
                         if sym as &str == "className" {
                             *i = JSXAttrOrSpread::JSXAttr(JSXAttr {
-                                name: JSXAttrName::Ident(Ident {
-                                    sym: JsWord::from("class"),
+                                name: JSXAttrName::Ident(IdentName {
+                                    sym: Atom::from("class"),
                                     span: *s,
-                                    optional: *o,
                                 }),
                                 span: *span,
                                 value: value.clone(),

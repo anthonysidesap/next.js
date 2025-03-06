@@ -6,7 +6,8 @@
 use std::{cell::RefCell, mem::take, rc::Rc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use turbopack_binding::swc::core::{
+use swc_core::{
+    atoms::Atom,
     common::{
         errors::HANDLER,
         pass::{Repeat, Repeated},
@@ -14,7 +15,7 @@ use turbopack_binding::swc::core::{
     },
     ecma::{
         ast::*,
-        visit::{noop_fold_type, noop_visit_type, Fold, FoldWith, Visit, VisitWith},
+        visit::{fold_pass, noop_fold_type, noop_visit_type, Fold, FoldWith, Visit, VisitWith},
     },
 };
 
@@ -51,16 +52,15 @@ impl PageMode {
 }
 
 /// A transform that either:
-/// * strips Next.js data exports (getServerSideProps, getStaticProps,
-///   getStaticPaths); or
+/// * strips Next.js data exports (getServerSideProps, getStaticProps, getStaticPaths); or
 /// * strips the default export.
 ///
 /// Note: This transform requires running `resolver` **before** running it.
 pub fn next_transform_strip_page_exports(
     filter: ExportFilter,
-    ssr_removed_packages: Rc<RefCell<FxHashSet<String>>>,
-) -> impl Fold {
-    Repeat::new(NextSsg {
+    ssr_removed_packages: Rc<RefCell<FxHashSet<Atom>>>,
+) -> impl Pass {
+    fold_pass(Repeat::new(NextSsg {
         state: State {
             ssr_removed_packages,
             filter,
@@ -68,7 +68,7 @@ pub fn next_transform_strip_page_exports(
         },
         in_lhs_of_var: false,
         remove_expression: false,
-    })
+    }))
 }
 
 /// State of the transforms. Shared by the analyzer and the transform.
@@ -104,7 +104,7 @@ struct State {
 
     /// Track the import packages which are removed alongside
     /// `getServerSideProps` in SSR.
-    ssr_removed_packages: Rc<RefCell<FxHashSet<String>>>,
+    ssr_removed_packages: Rc<RefCell<FxHashSet<Atom>>>,
 }
 
 /// The type of export associated to an identifier.
@@ -601,13 +601,15 @@ impl NextSsg {
                         decl: Decl::Var(Box::new(VarDecl {
                             span: DUMMY_SP,
                             kind: VarDeclKind::Var,
-                            declare: Default::default(),
                             decls: vec![VarDeclarator {
                                 span: DUMMY_SP,
-                                name: Pat::Ident(Ident::new(data_marker.into(), DUMMY_SP).into()),
+                                name: Pat::Ident(
+                                    IdentName::new(data_marker.into(), DUMMY_SP).into(),
+                                ),
                                 init: Some(true.into()),
                                 definite: Default::default(),
                             }],
+                            ..Default::default()
                         })),
                     })),
                 );
@@ -732,12 +734,12 @@ impl Fold for NextSsg {
                         self.state
                             .ssr_removed_packages
                             .borrow_mut()
-                            .insert(import_src.to_string());
+                            .insert(import_src.clone());
                     }
                     tracing::trace!(
                         "Dropping import `{}{:?}` because it should be removed",
                         local.sym,
-                        local.span.ctxt
+                        local.ctxt
                     );
 
                     self.state.should_run_again = true;
@@ -926,7 +928,7 @@ impl Fold for NextSsg {
                         tracing::trace!(
                             "Dropping var `{}{:?}` because it should be removed",
                             name.id.sym,
-                            name.id.span.ctxt
+                            name.id.ctxt
                         );
 
                         return Pat::Invalid(Invalid { span: DUMMY_SP });
@@ -980,7 +982,7 @@ impl Fold for NextSsg {
                 tracing::trace!(
                     "Dropping var `{}{:?}` because it should be removed",
                     name.id.sym,
-                    name.id.span.ctxt
+                    name.id.ctxt
                 );
 
                 return SimpleAssignTarget::Invalid(Invalid { span: DUMMY_SP });

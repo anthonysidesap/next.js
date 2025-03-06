@@ -1,8 +1,9 @@
 use std::{cell::RefCell, mem::take, rc::Rc};
 
 use easy_error::{bail, Error};
-use fxhash::FxHashSet;
-use turbopack_binding::swc::core::{
+use rustc_hash::FxHashSet;
+use swc_core::{
+    atoms::Atom,
     common::{
         errors::HANDLER,
         pass::{Repeat, Repeated},
@@ -10,21 +11,21 @@ use turbopack_binding::swc::core::{
     },
     ecma::{
         ast::*,
-        visit::{noop_fold_type, Fold, FoldWith},
+        visit::{fold_pass, noop_fold_type, Fold, FoldWith},
     },
 };
 
 static SSG_EXPORTS: &[&str; 3] = &["getStaticProps", "getStaticPaths", "getServerSideProps"];
 
 /// Note: This paths requires running `resolver` **before** running this.
-pub fn next_ssg(eliminated_packages: Rc<RefCell<FxHashSet<String>>>) -> impl Fold {
-    Repeat::new(NextSsg {
+pub fn next_ssg(eliminated_packages: Rc<RefCell<FxHashSet<Atom>>>) -> impl Pass {
+    fold_pass(Repeat::new(NextSsg {
         state: State {
             eliminated_packages,
             ..Default::default()
         },
         in_lhs_of_var: false,
-    })
+    }))
 }
 
 /// State of the transforms. Shared by the analyzer and the transform.
@@ -52,7 +53,7 @@ struct State {
 
     /// Track the import packages which are eliminated in the
     /// `getServerSideProps`
-    pub eliminated_packages: Rc<RefCell<FxHashSet<String>>>,
+    pub eliminated_packages: Rc<RefCell<FxHashSet<Atom>>>,
 }
 
 impl State {
@@ -201,7 +202,7 @@ impl Fold for Analyzer<'_> {
         tracing::trace!(
             "ssg: Handling `{}{:?}`; in_data_fn = {:?}",
             f.ident.sym,
-            f.ident.span.ctxt,
+            f.ident.ctxt,
             self.in_data_fn
         );
 
@@ -387,12 +388,12 @@ impl Fold for NextSsg {
                         self.state
                             .eliminated_packages
                             .borrow_mut()
-                            .insert(import_src.to_string());
+                            .insert(import_src.clone());
                     }
                     tracing::trace!(
                         "Dropping import `{}{:?}` because it should be removed",
                         local.sym,
-                        local.span.ctxt
+                        local.ctxt
                     );
 
                     self.state.should_run_again = true;
@@ -466,7 +467,7 @@ impl Fold for NextSsg {
                 let mut var = Some(VarDeclarator {
                     span: DUMMY_SP,
                     name: Pat::Ident(
-                        Ident::new(
+                        IdentName::new(
                             if self.state.is_prerenderer {
                                 "__N_SSG".into()
                             } else {
@@ -498,8 +499,8 @@ impl Fold for NextSsg {
                                 decl: Decl::Var(Box::new(VarDecl {
                                     span: DUMMY_SP,
                                     kind: VarDeclKind::Var,
-                                    declare: Default::default(),
                                     decls: vec![var],
+                                    ..Default::default()
                                 })),
                             })))
                         }
@@ -578,7 +579,7 @@ impl Fold for NextSsg {
                         tracing::trace!(
                             "Dropping var `{}{:?}` because it should be removed",
                             name.id.sym,
-                            name.id.span.ctxt
+                            name.id.ctxt
                         );
 
                         return Pat::Invalid(Invalid { span: DUMMY_SP });

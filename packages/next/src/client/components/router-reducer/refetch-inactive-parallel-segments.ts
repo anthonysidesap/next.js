@@ -69,9 +69,8 @@ async function refreshInactiveParallelSegmentsImpl({
         // and might not contain the data we need to patch in interception route data (such as dynamic params from a previous segment)
         flightRouterState: [rootTree[0], rootTree[1], rootTree[2], 'refetch'],
         nextUrl: includeNextUrl ? state.nextUrl : null,
-        buildId: state.buildId,
       }
-    ).then(({ f: flightData }) => {
+    ).then(({ flightData }) => {
       if (typeof flightData !== 'string') {
         for (const flightDataPath of flightData) {
           // we only pass the new cache as this function is called after clearing the router cache

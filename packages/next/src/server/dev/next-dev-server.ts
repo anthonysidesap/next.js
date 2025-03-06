@@ -1,17 +1,17 @@
-import type { FindComponentsResult } from '../next-server'
+import type { FindComponentsResult, NodeRequestHandler } from '../next-server'
 import type { LoadComponentsReturnType } from '../load-components'
 import type { Options as ServerOptions } from '../next-server'
-import type { Params } from '../../client/components/params'
+import type { Params } from '../request/params'
 import type { ParsedUrl } from '../../shared/lib/router/utils/parse-url'
 import type { ParsedUrlQuery } from 'querystring'
 import type { UrlWithParsedQuery } from 'url'
-import type { FallbackMode, MiddlewareRoutingItem } from '../base-server'
-import type { FunctionComponent } from 'react'
+import type { MiddlewareRoutingItem } from '../base-server'
 import type { RouteDefinition } from '../route-definitions/route-definition'
 import type { RouteMatcherManager } from '../route-matcher-managers/route-matcher-manager'
-import type {
-  NextParsedUrlQuery,
-  NextUrlWithParsedQuery,
+import {
+  getRequestMeta,
+  type NextParsedUrlQuery,
+  type NextUrlWithParsedQuery,
 } from '../request-meta'
 import type { DevBundlerService } from '../lib/dev-bundler-service'
 import type { IncrementalCache } from '../lib/incremental-cache'
@@ -58,7 +58,7 @@ import { DevAppRouteRouteMatcherProvider } from '../route-matcher-providers/dev/
 import { NodeManifestLoader } from '../route-matcher-providers/helpers/manifest-loaders/node-manifest-loader'
 import { BatchedFileReader } from '../route-matcher-providers/dev/helpers/file-reader/batched-file-reader'
 import { DefaultFileReader } from '../route-matcher-providers/dev/helpers/file-reader/default-file-reader'
-import LRUCache from 'next/dist/compiled/lru-cache'
+import { LRUCache } from '../lib/lru-cache'
 import { getMiddlewareRouteMatcher } from '../../shared/lib/router/utils/middleware-route-matcher'
 import { DetachedPromise } from '../../lib/detached-promise'
 import { isPostpone } from '../lib/router-utils/is-postpone'
@@ -67,13 +67,17 @@ import { buildCustomRoute } from '../../lib/build-custom-route'
 import { decorateServerError } from '../../shared/lib/error-source'
 import type { ServerOnInstrumentationRequestError } from '../app-render/types'
 import type { ServerComponentsHmrCache } from '../response-cache'
+import { logRequests } from './log-requests'
+import { FallbackMode } from '../../lib/fallback'
+import type { PagesDevOverlayType } from '../../client/components/react-dev-overlay/pages/pages-dev-overlay'
 
 // Load ReactDevOverlay only when needed
-let ReactDevOverlayImpl: FunctionComponent
-const ReactDevOverlay = (props: any) => {
+let ReactDevOverlayImpl: PagesDevOverlayType
+const ReactDevOverlay: PagesDevOverlayType = (props) => {
   if (ReactDevOverlayImpl === undefined) {
     ReactDevOverlayImpl =
-      require('../../client/components/react-dev-overlay/pages/client').ReactDevOverlay
+      require('../../client/components/react-dev-overlay/pages/pages-dev-overlay')
+        .PagesDevOverlay as PagesDevOverlayType
   }
   return ReactDevOverlayImpl(props)
 }
@@ -110,7 +114,6 @@ export default class DevServer extends Server {
   private originalFetch?: typeof fetch
   private readonly bundlerService: DevBundlerService
   private staticPathsCache: LRUCache<
-    string,
     UnwrapPromise<ReturnType<DevServer['getStaticPaths']>>
   >
   private startServerSpan: Span
@@ -160,23 +163,26 @@ export default class DevServer extends Server {
     this.bundlerService = options.bundlerService
     this.startServerSpan =
       options.startServerSpan ?? trace('start-next-dev-server')
-    this.storeGlobals()
     this.renderOpts.dev = true
     this.renderOpts.ErrorDebug = ReactDevOverlay
-    this.staticPathsCache = new LRUCache({
+    this.staticPathsCache = new LRUCache(
       // 5MB
-      max: 5 * 1024 * 1024,
-      length(value) {
-        return JSON.stringify(value.staticPaths).length
-      },
-    })
+      5 * 1024 * 1024,
+      function length(value) {
+        return JSON.stringify(value.staticPaths)?.length ?? 0
+      }
+    )
     this.renderOpts.ampSkipValidation =
       this.nextConfig.experimental?.amp?.skipValidation ?? false
     this.renderOpts.ampValidator = (html: string, pathname: string) => {
       const validatorPath =
-        this.nextConfig.experimental &&
-        this.nextConfig.experimental.amp &&
-        this.nextConfig.experimental.amp.validator
+        (this.nextConfig.experimental &&
+          this.nextConfig.experimental.amp &&
+          this.nextConfig.experimental.amp.validator) ||
+        require.resolve(
+          'next/dist/compiled/amphtml-validator/validator_wasm.js'
+        )
+
       const AmpHtmlValidator =
         require('next/dist/compiled/amphtml-validator') as typeof import('next/dist/compiled/amphtml-validator')
       return AmpHtmlValidator.getInstance(validatorPath).then((validator) => {
@@ -196,10 +202,12 @@ export default class DevServer extends Server {
     this.appDir = appDir
 
     if (this.nextConfig.experimental.serverComponentsHmrCache) {
-      this.serverComponentsHmrCache = new LRUCache({
-        max: this.nextConfig.cacheMaxMemorySize,
-        length: (value) => JSON.stringify(value).length,
-      })
+      this.serverComponentsHmrCache = new LRUCache(
+        this.nextConfig.cacheMaxMemorySize,
+        function length(value) {
+          return JSON.stringify(value).length
+        }
+      )
     }
   }
 
@@ -292,9 +300,6 @@ export default class DevServer extends Server {
     await super.prepareImpl()
     await this.matchers.reload()
 
-    // Store globals again to preserve changes made by the instrumentation hook.
-    this.storeGlobals()
-
     this.ready?.resolve()
     this.ready = undefined
 
@@ -312,16 +317,12 @@ export default class DevServer extends Server {
         // not really errors. They're just part of rendering.
         return
       }
-      this.logErrorWithOriginalStack(reason, 'unhandledRejection').catch(
-        () => {}
-      )
+      this.logErrorWithOriginalStack(reason, 'unhandledRejection')
     })
     process.on('uncaughtException', (err) => {
-      this.logErrorWithOriginalStack(err, 'uncaughtException').catch(() => {})
+      this.logErrorWithOriginalStack(err, 'uncaughtException')
     })
   }
-
-  protected async close(): Promise<void> {}
 
   protected async hasPage(pathname: string): Promise<boolean> {
     let normalizedPath: string
@@ -419,7 +420,9 @@ export default class DevServer extends Server {
        */
       if (
         request.url.includes('/_next/static') ||
-        request.url.includes('/__nextjs_original-stack-frame')
+        request.url.includes('/__nextjs_original-stack-frame') ||
+        request.url.includes('/__nextjs_source-map') ||
+        request.url.includes('/__nextjs_error_feedback')
       ) {
         return { finished: false }
       }
@@ -458,6 +461,43 @@ export default class DevServer extends Server {
       res.statusCode = 500
       await this.renderError(err, req, res, page)
       return null
+    }
+  }
+
+  public getRequestHandler(): NodeRequestHandler {
+    const handler = super.getRequestHandler()
+
+    return (req, res, parsedUrl) => {
+      const request = this.normalizeReq(req)
+      const response = this.normalizeRes(res)
+      const loggingConfig = this.nextConfig.logging
+
+      if (loggingConfig !== false) {
+        const start = Date.now()
+        const isMiddlewareRequest = getRequestMeta(req, 'middlewareInvoke')
+
+        if (!isMiddlewareRequest) {
+          response.originalResponse.once('close', () => {
+            // NOTE: The route match is only attached to the request's meta data
+            // after the request handler is created, so we need to check it in the
+            // close handler and not before.
+            const routeMatch = getRequestMeta(req).match
+
+            if (!routeMatch) {
+              return
+            }
+
+            logRequests({
+              request,
+              response,
+              loggingConfig,
+              requestDurationInMs: Date.now() - start,
+            })
+          })
+        }
+      }
+
+      return handler(request, response, parsedUrl)
     }
   }
 
@@ -519,7 +559,7 @@ export default class DevServer extends Server {
     } catch (error) {
       const err = getProperError(error)
       formatServerError(err)
-      this.logErrorWithOriginalStack(err).catch(() => {})
+      this.logErrorWithOriginalStack(err)
       if (!res.sent) {
         res.statusCode = 500
         try {
@@ -534,11 +574,11 @@ export default class DevServer extends Server {
     }
   }
 
-  protected async logErrorWithOriginalStack(
+  protected logErrorWithOriginalStack(
     err?: unknown,
     type?: 'unhandledRejection' | 'uncaughtException' | 'warning' | 'app-dir'
-  ): Promise<void> {
-    await this.bundlerService.logErrorWithOriginalStack(err, type)
+  ): void {
+    this.bundlerService.logErrorWithOriginalStack(err, type)
   }
 
   protected getPagesManifest(): PagesManifest | undefined {
@@ -565,10 +605,18 @@ export default class DevServer extends Server {
       this.nextConfig.basePath
     ).map((route) => new RegExp(buildCustomRoute('rewrite', route).regex))
 
+    if (this.nextConfig.output === 'export' && rewrites.length > 0) {
+      Log.error(
+        'Intercepting routes are not supported with static export.\nRead more: https://nextjs.org/docs/app/building-your-application/deploying/static-exports#unsupported-features'
+      )
+
+      process.exit(1)
+    }
+
     return rewrites ?? []
   }
 
-  protected getMiddleware() {
+  protected async getMiddleware() {
     // We need to populate the match
     // field as it isn't serializable
     if (this.middleware?.match === null) {
@@ -697,7 +745,7 @@ export default class DevServer extends Server {
     isAppPath: boolean
   }): Promise<{
     staticPaths?: string[]
-    fallbackMode?: false | 'static' | 'blocking'
+    fallbackMode?: FallbackMode
   }> {
     // we lazy load the staticPaths to prevent the user
     // from waiting on them for the page to load in dev mode
@@ -718,9 +766,11 @@ export default class DevServer extends Server {
           distDir: this.distDir,
           pathname,
           config: {
+            pprConfig: this.nextConfig.experimental.ppr,
             configFileName,
             publicRuntimeConfig,
             serverRuntimeConfig,
+            dynamicIO: Boolean(this.nextConfig.experimental.dynamicIO),
           },
           httpAgentOptions,
           locales,
@@ -729,9 +779,15 @@ export default class DevServer extends Server {
           isAppPath,
           requestHeaders,
           cacheHandler: this.nextConfig.cacheHandler,
+          cacheHandlers: this.nextConfig.experimental.cacheHandlers,
+          cacheLifeProfiles: this.nextConfig.experimental.cacheLife,
           fetchCacheKeyPrefix: this.nextConfig.experimental.fetchCacheKeyPrefix,
           isrFlushToDisk: this.nextConfig.experimental.isrFlushToDisk,
           maxMemoryCacheSize: this.nextConfig.cacheMaxMemorySize,
+          nextConfigOutput: this.nextConfig.output,
+          buildId: this.buildId,
+          authInterrupts: Boolean(this.nextConfig.experimental.authInterrupts),
+          sriEnabled: Boolean(this.nextConfig.experimental.sri?.algorithm),
         })
         return pathsResult
       } finally {
@@ -746,35 +802,32 @@ export default class DevServer extends Server {
       []
     )
       .then((res) => {
-        const { paths: staticPaths = [], fallback } = res.value
+        const { prerenderedRoutes: staticPaths, fallbackMode: fallback } =
+          res.value
         if (!isAppPath && this.nextConfig.output === 'export') {
-          if (fallback === 'blocking') {
+          if (fallback === FallbackMode.BLOCKING_STATIC_RENDER) {
             throw new Error(
               'getStaticPaths with "fallback: blocking" cannot be used with "output: export". See more info here: https://nextjs.org/docs/advanced-features/static-html-export'
             )
-          } else if (fallback === true) {
+          } else if (fallback === FallbackMode.PRERENDER) {
             throw new Error(
               'getStaticPaths with "fallback: true" cannot be used with "output: export". See more info here: https://nextjs.org/docs/advanced-features/static-html-export'
             )
           }
         }
+
         const value: {
-          staticPaths: string[]
-          fallbackMode: FallbackMode
+          staticPaths: string[] | undefined
+          fallbackMode: FallbackMode | undefined
         } = {
-          staticPaths,
-          fallbackMode:
-            fallback === 'blocking'
-              ? 'blocking'
-              : fallback === true
-                ? 'static'
-                : fallback,
+          staticPaths: staticPaths?.map((route) => route.pathname),
+          fallbackMode: fallback,
         }
         this.staticPathsCache.set(pathname, value)
         return value
       })
       .catch((err) => {
-        this.staticPathsCache.del(pathname)
+        this.staticPathsCache.remove(pathname)
         if (!result) throw err
         Log.error(`Failed to generate static paths for ${pathname}:`)
         console.error(err)
@@ -784,14 +837,6 @@ export default class DevServer extends Server {
       return result
     }
     return nextInvoke as NonNullable<typeof result>
-  }
-
-  private storeGlobals(): void {
-    this.originalFetch = global.fetch
-  }
-
-  private restorePatchedGlobals(): void {
-    global.fetch = this.originalFetch ?? global.fetch
   }
 
   protected async ensurePage(opts: {
@@ -805,6 +850,7 @@ export default class DevServer extends Server {
   }
 
   protected async findPageComponents({
+    locale,
     page,
     query,
     params,
@@ -813,6 +859,7 @@ export default class DevServer extends Server {
     shouldEnsure,
     url,
   }: {
+    locale: string | undefined
     page: string
     query: NextParsedUrlQuery
     params: Params
@@ -829,38 +876,27 @@ export default class DevServer extends Server {
       // Wrap build errors so that they don't get logged again
       throw new WrappedBuildError(compilationErr)
     }
-    try {
-      if (shouldEnsure || this.renderOpts.customServer) {
-        await this.ensurePage({
-          page,
-          appPaths,
-          clientOnly: false,
-          definition: undefined,
-          url,
-        })
-      }
-
-      this.nextFontManifest = super.getNextFontManifest()
-      // before we re-evaluate a route module, we want to restore globals that might
-      // have been patched previously to their original state so that we don't
-      // patch on top of the previous patch, which would keep the context of the previous
-      // patched global in memory, creating a memory leak.
-      this.restorePatchedGlobals()
-
-      return await super.findPageComponents({
+    if (shouldEnsure || this.serverOptions.customServer) {
+      await this.ensurePage({
         page,
-        query,
-        params,
-        isAppPath,
-        shouldEnsure,
+        appPaths,
+        clientOnly: false,
+        definition: undefined,
         url,
       })
-    } catch (err) {
-      if ((err as any).code !== 'ENOENT') {
-        throw err
-      }
-      return null
     }
+
+    this.nextFontManifest = super.getNextFontManifest()
+
+    return await super.findPageComponents({
+      page,
+      query,
+      params,
+      locale,
+      isAppPath,
+      shouldEnsure,
+      url,
+    })
   }
 
   protected async getFallbackErrorComponents(
@@ -880,7 +916,6 @@ export default class DevServer extends Server {
     await super.instrumentationOnRequestError(...args)
 
     const err = args[0]
-    // Safe catch to avoid floating promises
-    this.logErrorWithOriginalStack(err, 'app-dir').catch(() => {})
+    this.logErrorWithOriginalStack(err, 'app-dir')
   }
 }

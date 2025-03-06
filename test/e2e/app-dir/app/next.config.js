@@ -2,19 +2,14 @@
  * @type import('next').NextConfig
  */
 module.exports = {
+  env: {
+    LEGACY_ENV_KEY: '1',
+  },
   experimental: {
     clientRouterFilterRedirects: true,
     parallelServerCompiles: true,
     parallelServerBuildTraces: true,
     webpackBuildWorker: true,
-  },
-  webpack(cfg) {
-    if (process.env.NEXT_PRIVATE_FLYING_SHUTTLE) {
-      // disable the webpack cache to make sure we're
-      // deterministic without
-      cfg.cache = false
-    }
-    return cfg
   },
   // output: 'standalone',
   rewrites: async () => {

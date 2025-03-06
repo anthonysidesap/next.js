@@ -1,17 +1,11 @@
 use anyhow::Result;
-use indexmap::indexmap;
-use turbo_tasks::{TaskInput, Vc};
-use turbopack_binding::{
-    turbo::tasks::Value,
-    turbopack::{
-        core::{
-            context::AssetContext, module::Module, reference_type::ReferenceType,
-            resolve::ModulePart, source::Source,
-        },
-        r#static::StaticModuleAsset,
-        turbopack::{module_options::CustomModuleType, ModuleAssetContext},
-    },
+use turbo_tasks::{fxindexmap, ResolvedVc, TaskInput, Value, Vc};
+use turbopack::{module_options::CustomModuleType, ModuleAssetContext};
+use turbopack_core::{
+    context::AssetContext, module::Module, reference_type::ReferenceType, resolve::ModulePart,
+    source::Source,
 };
+use turbopack_static::ecma::StaticUrlJsModule;
 
 use super::source_asset::StructuredImageFileSource;
 
@@ -42,12 +36,12 @@ pub struct StructuredImageModuleType {
 impl StructuredImageModuleType {
     #[turbo_tasks::function]
     pub(crate) async fn create_module(
-        source: Vc<Box<dyn Source>>,
+        source: ResolvedVc<Box<dyn Source>>,
         blur_placeholder_mode: BlurPlaceholderMode,
-        context: Vc<ModuleAssetContext>,
+        module_asset_context: ResolvedVc<ModuleAssetContext>,
     ) -> Result<Vc<Box<dyn Module>>> {
-        let static_asset = StaticModuleAsset::new(source, Vc::upcast(context));
-        let module = context
+        let static_asset = StaticUrlJsModule::new(*source).to_resolved().await?;
+        Ok(module_asset_context
             .process(
                 Vc::upcast(
                     StructuredImageFileSource {
@@ -56,12 +50,11 @@ impl StructuredImageModuleType {
                     }
                     .cell(),
                 ),
-                Value::new(ReferenceType::Internal(Vc::cell(indexmap!(
-                    "IMAGE".into() => Vc::upcast(static_asset)
+                Value::new(ReferenceType::Internal(ResolvedVc::cell(fxindexmap!(
+                    "IMAGE".into() => ResolvedVc::upcast(static_asset)
                 )))),
             )
-            .module();
-        Ok(module)
+            .module())
     }
 
     #[turbo_tasks::function]
@@ -78,9 +71,13 @@ impl CustomModuleType for StructuredImageModuleType {
     fn create_module(
         &self,
         source: Vc<Box<dyn Source>>,
-        context: Vc<ModuleAssetContext>,
-        _part: Option<Vc<ModulePart>>,
+        module_asset_context: Vc<ModuleAssetContext>,
+        _part: Option<ModulePart>,
     ) -> Vc<Box<dyn Module>> {
-        StructuredImageModuleType::create_module(source, self.blur_placeholder_mode, context)
+        StructuredImageModuleType::create_module(
+            source,
+            self.blur_placeholder_mode,
+            module_asset_context,
+        )
     }
 }
